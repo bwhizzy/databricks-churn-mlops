@@ -3,3 +3,5 @@ scikit-learn
 mlflow
 pytest
 joblib
+fastapi
+uvicorn[standard]
