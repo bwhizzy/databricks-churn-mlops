@@ -1,5 +1,11 @@
 
+import sys
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from api.main import app
 
@@ -32,9 +38,6 @@ def test_predict_rejects_invalid_input():
 
 
 def test_predict_rejects_missing_fields():
-    response = client.post(
-        "/predict",
-        json={"age": 35},
-    )
+    response = client.post("/predict", json={"age": 35})
 
     assert response.status_code == 422
