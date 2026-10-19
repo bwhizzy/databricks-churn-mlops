@@ -1,17 +1,24 @@
 
 import os
-from pathlib import Path
+from functools import lru_cache
 
 import mlflow
 import pandas as pd
+import mlflow.sklearn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="Customer Churn Prediction API",
-    description="Predict customer churn using a trained ML model.",
+    description="Predict customer churn using a registered MLflow model.",
     version="1.0.0",
 )
+
+MODEL_NAME = os.getenv(
+    "REGISTERED_MODEL_NAME",
+    "main.default.customer_churn_model",
+)
+MODEL_VERSION = os.getenv("MODEL_VERSION", "2")
 
 FEATURES = [
     "age",
@@ -23,8 +30,6 @@ FEATURES = [
     "autopay_enabled",
     "paperless_billing",
 ]
-
-MODEL_PATH = os.getenv("MODEL_PATH", "model")
 
 
 class CustomerFeatures(BaseModel):
@@ -38,48 +43,48 @@ class CustomerFeatures(BaseModel):
     paperless_billing: int = Field(ge=0, le=1)
 
 
+@lru_cache(maxsize=1)
+def load_model():
+    # Authentication is supplied through environment variables.
+    if not os.getenv("DATABRICKS_HOST") or not os.getenv("DATABRICKS_TOKEN"):
+        raise RuntimeError(
+            "Set DATABRICKS_HOST and DATABRICKS_TOKEN before prediction."
+        )
+
+    mlflow.set_registry_uri("databricks-uc")
+    model_uri = f"models:/{MODEL_NAME}/{MODEL_VERSION}"
+    return mlflow.sklearn.load_model(model_uri)
+
+
 @app.get("/health")
 def health():
     return {"status": "healthy"}
-
-
-def load_model():
-    path = Path(MODEL_PATH)
-    if not path.exists():
-        return None
-    return mlflow.pyfunc.load_model(str(path))
 
 
 @app.post("/predict")
 def predict(customer: CustomerFeatures):
     try:
         model = load_model()
-        if model is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Model artifact not found. Configure MODEL_PATH.",
-            )
-
         features = pd.DataFrame(
             [customer.model_dump()],
             columns=FEATURES,
         )
 
         prediction = int(model.predict(features)[0])
-
-        probability = None
-        if hasattr(model, "predict_proba"):
-            probability = float(model.predict_proba(features)[0][1])
+        probabilities = model.predict_proba(features)[0]
+        classes = list(model.classes_)
+        churn_index = classes.index(1)
 
         return {
             "churn_prediction": prediction,
-            "churn_probability": probability,
+            "churn_probability": float(probabilities[churn_index]),
         }
 
-    except HTTPException:
-        raise
     except Exception as exc:
+        # Log the details on the server; don't expose credentials or
+        # internal connection details in the HTTP response.
+        print(f"Prediction error: {type(exc).__name__}: {exc}")
         raise HTTPException(
-            status_code=500,
-            detail="Prediction failed.",
+            status_code=503,
+            detail="Model unavailable. Check model access and server configuration.",
         ) from exc
